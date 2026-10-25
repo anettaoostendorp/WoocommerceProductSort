@@ -7,8 +7,11 @@ jQuery(function ($) {
   const metaKeyField = $('#wcpsp_meta_key');
   const metaTypeField = $('#wcpsp_meta_type');
   const listWrap = $('#wcpsp_presets_list');
+  const logContainer = $('#wcpsp_log_container');
   const submitBtn = $('#wcpsp_submit');
   const cancelBtn = $('#wcpsp_cancel_edit');
+  const refreshBtn = $('#wcpsp-refresh-log');
+  const clearBtn = $('#wcpsp-clear-log');
 
   function toggleMetaFields() {
     const isCustom = sortTypeField.val() === 'custom_meta';
@@ -22,6 +25,17 @@ jQuery(function ($) {
     submitBtn.text('Save preset');
     cancelBtn.hide();
     toggleMetaFields();
+  }
+
+  function refreshLogViewer() {
+    $.post(wcpsp.ajax_url, {
+      action: 'wcpsp_get_log',
+      nonce: wcpsp.nonce
+    }, function (response) {
+      if (response && response.success) {
+        logContainer.html(response.data.markup);
+      }
+    });
   }
 
   sortTypeField.on('change', toggleMetaFields);
@@ -51,6 +65,7 @@ jQuery(function ($) {
       if (response.success) {
         listWrap.html(response.data.markup);
         resetForm();
+        refreshLogViewer();
       } else {
         alert(response.data.message || 'Something went wrong.');
       }
@@ -114,6 +129,7 @@ jQuery(function ($) {
     }, function (response) {
       if (response.success) {
         listWrap.html(response.data.markup);
+        refreshLogViewer();
       } else {
         alert(response.data.message || 'Unable to update default preset.');
       }
@@ -137,8 +153,30 @@ jQuery(function ($) {
         if (presetIdField.val() === presetId) {
           resetForm();
         }
+        refreshLogViewer();
       } else {
         alert(response.data.message || 'Unable to delete preset.');
+      }
+    });
+  });
+
+  refreshBtn.on('click', function () {
+    refreshLogViewer();
+  });
+
+  clearBtn.on('click', function () {
+    if (!confirm('Clear log entries?')) {
+      return;
+    }
+
+    $.post(wcpsp.ajax_url, {
+      action: 'wcpsp_clear_log',
+      nonce: wcpsp.nonce
+    }, function (response) {
+      if (response && response.success) {
+        logContainer.html(response.data.markup);
+      } else {
+        alert(response.data.message || 'Unable to clear log.');
       }
     });
   });

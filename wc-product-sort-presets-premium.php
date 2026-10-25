@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WC Product Sort Presets Premium
- * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, and automatic shop sorting.
- * Version: 1.0.0
+ * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, automatic shop sorting, and activity logging.
+ * Version: 1.1.0
  * Author: GitHub Copilot
  * Text Domain: wc-product-sort-presets-premium
  */
@@ -14,6 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WC_Product_Sort_Presets_Premium {
     const OPTION_PRESETS = 'wcpsp_presets';
     const OPTION_DEFAULT = 'wcpsp_default_preset';
+    const LOG_FILE_NAME = 'wcpsp-debug.log';
 
     public static function init() {
         $instance = new self();
@@ -26,12 +27,105 @@ final class WC_Product_Sort_Presets_Premium {
         add_action( 'wp_ajax_wcpsp_get_preset', array( $instance, 'ajax_get_preset' ) );
         add_action( 'wp_ajax_wcpsp_delete_preset', array( $instance, 'ajax_delete_preset' ) );
         add_action( 'wp_ajax_wcpsp_set_default_preset', array( $instance, 'ajax_set_default_preset' ) );
+        add_action( 'wp_ajax_wcpsp_clear_log', array( $instance, 'ajax_clear_log' ) );
 
         add_filter( 'woocommerce_default_catalog_orderby', array( $instance, 'default_catalog_orderby' ), 100 );
         add_filter( 'woocommerce_get_catalog_ordering_args', array( $instance, 'catalog_ordering_args' ), 100, 2 );
 
         add_action( 'woocommerce_before_shop_loop', array( $instance, 'render_frontend_selector' ), 15 );
         add_shortcode( 'wcpsp_selector', array( $instance, 'render_selector_shortcode' ) );
+    }
+
+    public static function get_log_directory() {
+        $upload_dir = wp_upload_dir();
+        $directory = trailingslashit( $upload_dir['basedir'] ) . 'wcpsp-logs';
+
+        if ( ! is_dir( $directory ) ) {
+            wp_mkdir_p( $directory );
+        }
+
+        return $directory;
+    }
+
+    public static function get_log_file_path() {
+        return trailingslashit( self::get_log_directory() ) . self::LOG_FILE_NAME;
+    }
+
+    public static function log( string $message, array $context = array() ) : void {
+        $log_path = self::get_log_file_path();
+        $entry = array(
+            'time'    => gmdate( 'c' ),
+            'message' => $message,
+            'context' => $context,
+        );
+
+        $json = wp_json_encode( $entry );
+        if ( false === $json ) {
+            $json = wp_json_encode(
+                array(
+                    'time'    => gmdate( 'c' ),
+                    'message' => $message,
+                    'context' => array( 'encoding_error' => true ),
+                )
+            );
+        }
+
+        if ( false === $json ) {
+            $json = '{"time":"' . gmdate( 'c' ) . '","message":"' . esc_html( $message ) . '","context":{}}';
+        }
+
+        $result = file_put_contents( $log_path, $json . PHP_EOL, FILE_APPEND | LOCK_EX );
+        if ( false === $result ) {
+            error_log( '[WCPSP] Unable to write log to ' . $log_path );
+        }
+    }
+
+    public static function read_log( int $lines = 200 ) : array {
+        $log_path = self::get_log_file_path();
+
+        if ( ! file_exists( $log_path ) ) {
+            return array();
+        }
+
+        $contents = file( $log_path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES );
+        if ( false === $contents ) {
+            return array();
+        }
+
+        $slice = array_slice( $contents, -max( 1, $lines ) );
+        $entries = array();
+
+        foreach ( $slice as $line ) {
+            $decoded = json_decode( $line, true );
+            if ( is_array( $decoded ) ) {
+                $entries[] = $decoded;
+                continue;
+            }
+
+            $entries[] = array(
+                'time'    => '',
+                'message' => $line,
+                'context' => array(),
+            );
+        }
+
+        return $entries;
+    }
+
+    public static function clear_log() : void {
+        $log_path = self::get_log_file_path();
+
+        if ( file_exists( $log_path ) ) {
+            unlink( $log_path );
+        }
+    }
+
+    public static function generate_preset_id() : string {
+        if ( function_exists( 'wp_generate_uuid4' ) ) {
+            return wp_generate_uuid4();
+        }
+
+        return strtolower( str_replace( '.', '', uniqid( 'wcpsp_', true ) ) );
     }
 
     public function register_admin_page() {
@@ -54,7 +148,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-js',
             plugins_url( 'assets/admin.js', __FILE__ ),
             array( 'jquery' ),
-            '1.0.0',
+            '1.1.0',
             true
         );
 
@@ -62,7 +156,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-css',
             plugins_url( 'assets/admin.css', __FILE__ ),
             array(),
-            '1.0.0'
+            '1.1.0'
         );
 
         wp_localize_script(
@@ -84,7 +178,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-js',
             plugins_url( 'assets/frontend.js', __FILE__ ),
             array( 'jquery' ),
-            '1.0.0',
+            '1.1.0',
             true
         );
 
@@ -92,7 +186,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-css',
             plugins_url( 'assets/frontend.css', __FILE__ ),
             array(),
-            '1.0.0'
+            '1.1.0'
         );
 
         wp_localize_script(
@@ -103,6 +197,52 @@ final class WC_Product_Sort_Presets_Premium {
                 'current_url' => remove_query_arg( array( 'wcpsp_preset', 'orderby' ), wc_get_current_page_url() ),
             )
         );
+    }
+
+    public function render_log_viewer_markup() : string {
+        $entries = self::read_log( 200 );
+
+        if ( empty( $entries ) ) {
+            return '<p>' . esc_html__( 'No log entries yet.', 'wc-product-sort-presets-premium' ) . '</p>';
+        }
+
+        ob_start();
+        ?>
+        <div class="wcpsp-log-viewer">
+            <table class="widefat striped">
+                <thead>
+                    <tr>
+                        <th><?php esc_html_e( 'Time', 'wc-product-sort-presets-premium' ); ?></th>
+                        <th><?php esc_html_e( 'Message', 'wc-product-sort-presets-premium' ); ?></th>
+                        <th><?php esc_html_e( 'Context', 'wc-product-sort-presets-premium' ); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ( $entries as $entry ) : ?>
+                        <?php
+                        $time = ! empty( $entry['time'] ) ? $entry['time'] : ''; 
+                        $message = ! empty( $entry['message'] ) ? (string) $entry['message'] : ''; 
+                        $context = ! empty( $entry['context'] ) ? $entry['context'] : array();
+                        ?>
+                        <tr>
+                            <td><?php echo esc_html( $time ); ?></td>
+                            <td><?php echo esc_html( $message ); ?></td>
+                            <td>
+                                <?php
+                                if ( empty( $context ) ) {
+                                    echo esc_html__( '—', 'wc-product-sort-presets-premium' );
+                                } else {
+                                    echo '<pre style="white-space:pre-wrap; margin:0;">' . esc_html( wp_json_encode( $context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) ) . '</pre>';
+                                }
+                                ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <?php
+        return (string) ob_get_clean();
     }
 
     public function render_admin_page() {
@@ -251,6 +391,21 @@ final class WC_Product_Sort_Presets_Premium {
                 <h2><?php esc_html_e( 'Saved presets', 'wc-product-sort-presets-premium' ); ?></h2>
                 <div id="wcpsp_presets_list">
                     <?php echo $this->render_presets_markup( $presets, $default_id ); ?>
+                </div>
+
+                <hr />
+
+                <h2><?php esc_html_e( 'Activity log', 'wc-product-sort-presets-premium' ); ?></h2>
+                <div class="wcpsp-log-toolbar" style="margin-bottom: 12px;">
+                    <button type="button" class="button button-secondary" id="wcpsp-refresh-log">
+                        <?php esc_html_e( 'Refresh log', 'wc-product-sort-presets-premium' ); ?>
+                    </button>
+                    <button type="button" class="button button-link-delete" id="wcpsp-clear-log">
+                        <?php esc_html_e( 'Clear log', 'wc-product-sort-presets-premium' ); ?>
+                    </button>
+                </div>
+                <div id="wcpsp_log_container">
+                    <?php echo $this->render_log_viewer_markup(); ?>
                 </div>
             </div>
         </div>
@@ -655,7 +810,7 @@ final class WC_Product_Sort_Presets_Premium {
         }
 
         if ( empty( $preset_id ) ) {
-            $preset_id = wp_generate_uuid4();
+            $preset_id = self::generate_preset_id();
         }
 
         $preset = array(
@@ -676,6 +831,19 @@ final class WC_Product_Sort_Presets_Premium {
         if ( $set_default ) {
             update_option( self::OPTION_DEFAULT, $preset_id );
         }
+
+        self::log(
+            'Preset saved.',
+            array(
+                'preset_id' => $preset_id,
+                'name'      => $name,
+                'sort_type' => $sort_type,
+                'order'     => $order,
+                'category_ids' => $category_ids,
+                'tag_ids'      => $tag_ids,
+                'set_default'  => $set_default,
+            )
+        );
 
         wp_send_json_success(
             array(
@@ -699,6 +867,7 @@ final class WC_Product_Sort_Presets_Premium {
             wp_send_json_error( array( 'message' => __( 'Preset not found.', 'wc-product-sort-presets-premium' ) ) );
         }
 
+        $preset_name = $presets[ $preset_id ]['name'] ?? 'unknown';
         unset( $presets[ $preset_id ] );
         update_option( self::OPTION_PRESETS, $presets );
 
@@ -706,6 +875,14 @@ final class WC_Product_Sort_Presets_Premium {
         if ( $default_id === $preset_id ) {
             delete_option( self::OPTION_DEFAULT );
         }
+
+        self::log(
+            'Preset deleted.',
+            array(
+                'preset_id' => $preset_id,
+                'name'      => $preset_name,
+            )
+        );
 
         wp_send_json_success(
             array(
@@ -731,10 +908,36 @@ final class WC_Product_Sort_Presets_Premium {
 
         update_option( self::OPTION_DEFAULT, $preset_id );
 
+        self::log(
+            'Default preset updated.',
+            array(
+                'preset_id' => $preset_id,
+                'name'      => $presets[ $preset_id ]['name'] ?? 'unknown',
+            )
+        );
+
         wp_send_json_success(
             array(
                 'message' => __( 'Default preset updated.', 'wc-product-sort-presets-premium' ),
                 'markup'  => $this->render_presets_markup( $presets, $preset_id ),
+            )
+        );
+    }
+
+    public function ajax_clear_log() {
+        check_ajax_referer( 'wcpsp_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'wc-product-sort-presets-premium' ) ) );
+        }
+
+        self::clear_log();
+        self::log( 'Log cleared by admin.' );
+
+        wp_send_json_success(
+            array(
+                'message' => __( 'Log cleared.', 'wc-product-sort-presets-premium' ),
+                'markup'  => $this->render_log_viewer_markup(),
             )
         );
     }

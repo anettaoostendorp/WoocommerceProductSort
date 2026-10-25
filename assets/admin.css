@@ -18,3 +18,21 @@
   display: block;
   margin-bottom: 8px;
 }
+
+.wcpsp-log-viewer {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.wcpsp-log-viewer table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.wcpsp-log-viewer td,
+.wcpsp-log-viewer th {
+  vertical-align: top;
+  word-break: break-word;
+}
