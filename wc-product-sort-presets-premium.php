@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WC Product Sort Presets Premium
- * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, automatic shop sorting, and server-side error logging.
- * Version: 1.2.0
+ * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, automatic shop sorting, server-side error logging, and WooCommerce compatibility gating.
+ * Version: 1.2.2
  * Author: GitHub Copilot
  * Text Domain: wc-product-sort-presets-premium
  */
@@ -15,8 +15,71 @@ final class WC_Product_Sort_Presets_Premium {
     const OPTION_PRESETS = 'wcpsp_presets';
     const OPTION_DEFAULT = 'wcpsp_default_preset';
     const LOG_FILE_NAME = 'wcpsp-debug.log';
+    const MIN_WC_VERSION = '7.0.0';
 
     private static $error_handlers_registered = false;
+
+    public static function activation_compatibility_check() {
+        $woocommerce_active = class_exists( 'WooCommerce' );
+        $woocommerce_version = defined( 'WC_VERSION' ) ? WC_VERSION : 'unknown';
+
+        if ( ! $woocommerce_active ) {
+            deactivate_plugins( plugin_basename( __FILE__ ), true );
+            update_option( 'wcpsp_compatibility_status', 'failed:no-woocommerce' );
+            wp_die(
+                sprintf(
+                    esc_html__( 'WC Product Sort Presets Premium requires WooCommerce to be active. Please install and activate WooCommerce before enabling this plugin.', 'wc-product-sort-presets-premium' )
+                )
+            );
+        }
+
+        if ( version_compare( $woocommerce_version, self::MIN_WC_VERSION, '<' ) ) {
+            deactivate_plugins( plugin_basename( __FILE__ ), true );
+            update_option( 'wcpsp_compatibility_status', 'failed:wc-version' );
+            wp_die(
+                sprintf(
+                    esc_html__( 'WC Product Sort Presets Premium requires WooCommerce %1$s or newer. Your site is running WooCommerce %2$s.', 'wc-product-sort-presets-premium' ),
+                    esc_html( self::MIN_WC_VERSION ),
+                    esc_html( $woocommerce_version )
+                )
+            );
+        }
+
+        update_option( 'wcpsp_compatibility_status', 'passed' );
+    }
+
+    public static function should_load_plugin() {
+        if ( ! class_exists( 'WooCommerce' ) ) {
+            return false;
+        }
+
+        if ( ! defined( 'WC_VERSION' ) ) {
+            return false;
+        }
+
+        return version_compare( WC_VERSION, self::MIN_WC_VERSION, '>=' );
+    }
+
+    public static function render_compatibility_notice() {
+        if ( ! current_user_can( 'activate_plugins' ) ) {
+            return;
+        }
+
+        $wc_version = defined( 'WC_VERSION' ) ? WC_VERSION : __( 'Unknown', 'wc-product-sort-presets-premium' );
+        ?>
+        <div class="notice notice-warning is-dismissible">
+            <p>
+                <?php
+                printf(
+                    esc_html__( 'WC Product Sort Presets Premium is inactive because WooCommerce %1$s or newer is required. Current WooCommerce version: %2$s.', 'wc-product-sort-presets-premium' ),
+                    esc_html( self::MIN_WC_VERSION ),
+                    esc_html( $wc_version )
+                );
+                ?>
+            </p>
+        </div>
+        <?php
+    }
 
     public static function init() {
         $instance = new self();
@@ -41,6 +104,17 @@ final class WC_Product_Sort_Presets_Premium {
         add_shortcode( 'wcpsp_selector', array( $instance, 'render_selector_shortcode' ) );
     }
 
+    public static function get_current_page_url_for_frontend() {
+        if ( function_exists( 'wc_get_current_page_url' ) ) {
+            return remove_query_arg( array( 'wcpsp_preset', 'orderby' ), wc_get_current_page_url() );
+        }
+
+        $uri = isset( $_SERVER['REQUEST_URI'] ) ? wp_unslash( $_SERVER['REQUEST_URI'] ) : '/';
+        $url = home_url( $uri );
+
+        return remove_query_arg( array( 'wcpsp_preset', 'orderby' ), $url );
+    }
+
     public static function register_error_handlers() {
         if ( self::$error_handlers_registered ) {
             return;
@@ -61,11 +135,11 @@ final class WC_Product_Sort_Presets_Premium {
         self::log(
             'PHP error: ' . $errstr,
             array(
-                'errno'    => $errno,
-                'file'     => $errfile,
-                'line'     => $errline,
-                'type'     => self::php_error_type_to_label( $errno ),
-                'request'  => isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '',
+                'errno'   => $errno,
+                'file'    => $errfile,
+                'line'    => $errline,
+                'type'    => self::php_error_type_to_label( $errno ),
+                'request' => isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '',
             )
         );
 
@@ -76,10 +150,10 @@ final class WC_Product_Sort_Presets_Premium {
         self::log(
             'Uncaught exception: ' . $exception->getMessage(),
             array(
-                'type'    => get_class( $exception ),
-                'file'    => $exception->getFile(),
-                'line'    => $exception->getLine(),
-                'trace'   => $exception->getTraceAsString(),
+                'type'  => get_class( $exception ),
+                'file'  => $exception->getFile(),
+                'line'  => $exception->getLine(),
+                'trace' => $exception->getTraceAsString(),
             )
         );
     }
@@ -97,9 +171,9 @@ final class WC_Product_Sort_Presets_Premium {
             self::log(
                 'PHP fatal error: ' . $error['message'],
                 array(
-                    'type'    => self::php_error_type_to_label( $error['type'] ),
-                    'file'    => $error['file'],
-                    'line'    => $error['line'],
+                    'type' => self::php_error_type_to_label( $error['type'] ),
+                    'file' => $error['file'],
+                    'line' => $error['line'],
                 )
             );
         }
@@ -239,7 +313,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-js',
             plugins_url( 'assets/admin.js', __FILE__ ),
             array( 'jquery' ),
-            '1.2.0',
+            '1.2.2',
             true
         );
 
@@ -247,7 +321,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-css',
             plugins_url( 'assets/admin.css', __FILE__ ),
             array(),
-            '1.2.0'
+            '1.2.2'
         );
 
         wp_localize_script(
@@ -269,7 +343,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-js',
             plugins_url( 'assets/frontend.js', __FILE__ ),
             array( 'jquery' ),
-            '1.2.0',
+            '1.2.2',
             true
         );
 
@@ -277,15 +351,15 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-css',
             plugins_url( 'assets/frontend.css', __FILE__ ),
             array(),
-            '1.2.0'
+            '1.2.2'
         );
 
         wp_localize_script(
             'wcpsp-front-js',
             'wcpsp_frontend',
             array(
-                'presets' => $this->get_presets(),
-                'current_url' => remove_query_arg( array( 'wcpsp_preset', 'orderby' ), wc_get_current_page_url() ),
+                'presets'     => $this->get_presets(),
+                'current_url' => self::get_current_page_url_for_frontend(),
             )
         );
     }
@@ -1048,11 +1122,16 @@ final class WC_Product_Sort_Presets_Premium {
     }
 }
 
+register_activation_hook( __FILE__, array( 'WC_Product_Sort_Presets_Premium', 'activation_compatibility_check' ) );
+
 add_action(
     'plugins_loaded',
     function () {
-        if ( class_exists( 'WooCommerce' ) ) {
-            WC_Product_Sort_Presets_Premium::init();
+        if ( ! WC_Product_Sort_Presets_Premium::should_load_plugin() ) {
+            add_action( 'admin_notices', array( 'WC_Product_Sort_Presets_Premium', 'render_compatibility_notice' ) );
+            return;
         }
+
+        WC_Product_Sort_Presets_Premium::init();
     }
 );
