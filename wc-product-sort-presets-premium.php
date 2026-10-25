@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WC Product Sort Presets Premium
- * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, automatic shop sorting, and activity logging.
- * Version: 1.1.0
+ * Description: Save WooCommerce sorting presets with category/tag scope, custom meta sorting, automatic shop sorting, and server-side error logging.
+ * Version: 1.2.0
  * Author: GitHub Copilot
  * Text Domain: wc-product-sort-presets-premium
  */
@@ -16,8 +16,12 @@ final class WC_Product_Sort_Presets_Premium {
     const OPTION_DEFAULT = 'wcpsp_default_preset';
     const LOG_FILE_NAME = 'wcpsp-debug.log';
 
+    private static $error_handlers_registered = false;
+
     public static function init() {
         $instance = new self();
+
+        self::register_error_handlers();
 
         add_action( 'admin_menu', array( $instance, 'register_admin_page' ) );
         add_action( 'admin_enqueue_scripts', array( $instance, 'enqueue_admin_assets' ) );
@@ -28,12 +32,99 @@ final class WC_Product_Sort_Presets_Premium {
         add_action( 'wp_ajax_wcpsp_delete_preset', array( $instance, 'ajax_delete_preset' ) );
         add_action( 'wp_ajax_wcpsp_set_default_preset', array( $instance, 'ajax_set_default_preset' ) );
         add_action( 'wp_ajax_wcpsp_clear_log', array( $instance, 'ajax_clear_log' ) );
+        add_action( 'wp_ajax_wcpsp_get_log', array( $instance, 'ajax_get_log' ) );
 
         add_filter( 'woocommerce_default_catalog_orderby', array( $instance, 'default_catalog_orderby' ), 100 );
         add_filter( 'woocommerce_get_catalog_ordering_args', array( $instance, 'catalog_ordering_args' ), 100, 2 );
 
         add_action( 'woocommerce_before_shop_loop', array( $instance, 'render_frontend_selector' ), 15 );
         add_shortcode( 'wcpsp_selector', array( $instance, 'render_selector_shortcode' ) );
+    }
+
+    public static function register_error_handlers() {
+        if ( self::$error_handlers_registered ) {
+            return;
+        }
+
+        set_error_handler( array( __CLASS__, 'handle_php_error' ) );
+        set_exception_handler( array( __CLASS__, 'handle_exception' ) );
+        register_shutdown_function( array( __CLASS__, 'handle_shutdown' ) );
+
+        self::$error_handlers_registered = true;
+    }
+
+    public static function handle_php_error( $errno, $errstr, $errfile = '', $errline = 0 ) {
+        if ( ! ( error_reporting() & $errno ) ) {
+            return false;
+        }
+
+        self::log(
+            'PHP error: ' . $errstr,
+            array(
+                'errno'    => $errno,
+                'file'     => $errfile,
+                'line'     => $errline,
+                'type'     => self::php_error_type_to_label( $errno ),
+                'request'  => isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '',
+            )
+        );
+
+        return true;
+    }
+
+    public static function handle_exception( Throwable $exception ) {
+        self::log(
+            'Uncaught exception: ' . $exception->getMessage(),
+            array(
+                'type'    => get_class( $exception ),
+                'file'    => $exception->getFile(),
+                'line'    => $exception->getLine(),
+                'trace'   => $exception->getTraceAsString(),
+            )
+        );
+    }
+
+    public static function handle_shutdown() {
+        $error = error_get_last();
+
+        if ( empty( $error ) ) {
+            return;
+        }
+
+        $fatal_types = array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR );
+
+        if ( in_array( (int) $error['type'], $fatal_types, true ) ) {
+            self::log(
+                'PHP fatal error: ' . $error['message'],
+                array(
+                    'type'    => self::php_error_type_to_label( $error['type'] ),
+                    'file'    => $error['file'],
+                    'line'    => $error['line'],
+                )
+            );
+        }
+    }
+
+    private static function php_error_type_to_label( $errno ) {
+        $map = array(
+            E_ERROR => 'E_ERROR',
+            E_WARNING => 'E_WARNING',
+            E_PARSE => 'E_PARSE',
+            E_NOTICE => 'E_NOTICE',
+            E_CORE_ERROR => 'E_CORE_ERROR',
+            E_CORE_WARNING => 'E_CORE_WARNING',
+            E_COMPILE_ERROR => 'E_COMPILE_ERROR',
+            E_COMPILE_WARNING => 'E_COMPILE_WARNING',
+            E_RECOVERABLE_ERROR => 'E_RECOVERABLE_ERROR',
+            E_DEPRECATED => 'E_DEPRECATED',
+            E_USER_ERROR => 'E_USER_ERROR',
+            E_USER_WARNING => 'E_USER_WARNING',
+            E_USER_NOTICE => 'E_USER_NOTICE',
+            E_USER_DEPRECATED => 'E_USER_DEPRECATED',
+            E_STRICT => 'E_STRICT',
+        );
+
+        return isset( $map[ $errno ] ) ? $map[ $errno ] : 'UNKNOWN';
     }
 
     public static function get_log_directory() {
@@ -148,7 +239,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-js',
             plugins_url( 'assets/admin.js', __FILE__ ),
             array( 'jquery' ),
-            '1.1.0',
+            '1.2.0',
             true
         );
 
@@ -156,7 +247,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-admin-css',
             plugins_url( 'assets/admin.css', __FILE__ ),
             array(),
-            '1.1.0'
+            '1.2.0'
         );
 
         wp_localize_script(
@@ -178,7 +269,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-js',
             plugins_url( 'assets/frontend.js', __FILE__ ),
             array( 'jquery' ),
-            '1.1.0',
+            '1.2.0',
             true
         );
 
@@ -186,7 +277,7 @@ final class WC_Product_Sort_Presets_Premium {
             'wcpsp-front-css',
             plugins_url( 'assets/frontend.css', __FILE__ ),
             array(),
-            '1.1.0'
+            '1.2.0'
         );
 
         wp_localize_script(
@@ -220,8 +311,8 @@ final class WC_Product_Sort_Presets_Premium {
                 <tbody>
                     <?php foreach ( $entries as $entry ) : ?>
                         <?php
-                        $time = ! empty( $entry['time'] ) ? $entry['time'] : ''; 
-                        $message = ! empty( $entry['message'] ) ? (string) $entry['message'] : ''; 
+                        $time = ! empty( $entry['time'] ) ? $entry['time'] : '';
+                        $message = ! empty( $entry['message'] ) ? (string) $entry['message'] : '';
                         $context = ! empty( $entry['context'] ) ? $entry['context'] : array();
                         ?>
                         <tr>
@@ -762,6 +853,20 @@ final class WC_Product_Sort_Presets_Premium {
         }
     }
 
+    public function ajax_get_log() {
+        check_ajax_referer( 'wcpsp_nonce', 'nonce' );
+
+        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Permission denied.', 'wc-product-sort-presets-premium' ) ) );
+        }
+
+        wp_send_json_success(
+            array(
+                'markup' => $this->render_log_viewer_markup(),
+            )
+        );
+    }
+
     public function ajax_get_preset() {
         check_ajax_referer( 'wcpsp_nonce', 'nonce' );
 
@@ -835,10 +940,10 @@ final class WC_Product_Sort_Presets_Premium {
         self::log(
             'Preset saved.',
             array(
-                'preset_id' => $preset_id,
-                'name'      => $name,
-                'sort_type' => $sort_type,
-                'order'     => $order,
+                'preset_id'    => $preset_id,
+                'name'         => $name,
+                'sort_type'    => $sort_type,
+                'order'        => $order,
                 'category_ids' => $category_ids,
                 'tag_ids'      => $tag_ids,
                 'set_default'  => $set_default,
